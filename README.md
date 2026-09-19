@@ -1,65 +1,141 @@
 # Hugo MCP
 
-一个面向 Hugo 文件站点的轻量 MCP HTTP 服务。它直接读写 `content/posts/*.md`，不引入数据库，也不提供 CMS 后台。当前实现保持博客线上使用的功能：文章查询、草稿创建与更新、发布/撤回、软删除和 Hugo 构建。
+一个面向 Hugo 文件站点的轻量 MCP HTTP 服务。它直接读写 content/posts/*.md，不引入数据库，也不提供 CMS 后台。AI 客户端通过 MCP 调用文章工具，服务负责校验、写文件、生成备份、记录审计并按需执行 Hugo 构建。
 
-## 功能
+Git 操作不属于本服务。需要提交到 GitHub 时，由 MCP 客户端另外调用 GitHub MCP 或 GitHub Actions；Hugo MCP 不保存 GitHub 凭据。
 
-服务提供 JSON-RPC MCP 端点（兼容 `/`、`/mcp` 和 `/index.php/action/agent-mcp` 三个路径）：
+## 能做什么
 
-- `hugo_list_posts`：按状态、关键词分页列出文章，并返回 revision
-- `hugo_get_post`：读取文章 front matter 与正文
-- `hugo_create_draft`：创建草稿
-- `hugo_update_draft`：使用 revision 乐观锁更新文章
-- `hugo_publish_post`：发布并构建 Hugo
-- `hugo_unpublish_post`：撤回为草稿并构建 Hugo
-- `hugo_delete_post`：移动到私有 trash 后构建 Hugo（软删除）
-- `hugo_build`：手动构建 Hugo
+服务提供 JSON-RPC MCP 端点，以下三个路径等价：/、/mcp、/index.php/action/agent-mcp。只接受 POST，请求必须带 Authorization: Bearer <token>。
 
-所有写操作都要求 `request_id`。服务会记录幂等结果、写审计 JSONL、在变更前备份，并限制 slug、文件路径、请求体大小和请求频率。token 从数据目录的 `token` 文件读取；首次启动会生成随机 token，仓库不保存任何 token。
+| 工具 | 用途 | 关键参数 |
+| --- | --- | --- |
+| hugo_list_posts | 分页列出文章 | status、query、limit、offset |
+| hugo_get_post | 读取 front matter、正文和 revision | slug |
+| hugo_create_draft | 创建草稿 Markdown | title、request_id，可选 slug、content、categories、tags |
+| hugo_update_draft | 更新文章 | slug、expected_revision、request_id，以及要修改的字段 |
+| hugo_publish_post | 发布文章并构建 Hugo | slug、expected_revision、request_id |
+| hugo_unpublish_post | 撤回为草稿并构建 Hugo | slug、expected_revision、request_id |
+| hugo_delete_post | 软删除文章并构建 Hugo | slug、expected_revision、request_id |
+| hugo_build | 按当前源码执行一次 Hugo 构建 | 无 |
+
+本服务不包含后台 UI、评论管理、媒体上传、全文搜索、Git 提交或 GitHub 账号管理。
+
+## 推荐调用流程
+
+文章修改使用乐观锁，避免 AI 覆盖别人刚刚修改的内容：
+
+1. 调用 hugo_list_posts 或 hugo_get_post，取得目标文章的 revision。
+2. 调用 hugo_create_draft 或 hugo_update_draft。每次写操作都使用唯一的 request_id；重试同一个 request_id 会返回原结果，不会重复写入。
+3. 检查返回内容，确认标题、分类、标签和正文。
+4. 调用 hugo_publish_post，并传入刚才返回的最新 revision。
+5. 如需同步代码仓库，再由客户端调用 GitHub MCP 提交 Hugo 源码。
+
+如果 revision 已变化，服务会拒绝写入；重新读取文章后再提交，不要绕过检查。
+
+## JSON-RPC 示例
+
+查询工具：
+
+~~~http
+POST /mcp
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"jsonrpc":"2.0","id":1,"method":"tools/list"}
+~~~
+
+列出已发布文章：
+
+~~~json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "hugo_list_posts",
+    "arguments": {"status": "publish", "limit": 20, "offset": 0}
+  }
+}
+~~~
+
+创建草稿：
+
+~~~json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "hugo_create_draft",
+    "arguments": {
+      "title": "文章标题",
+      "slug": "article-title",
+      "content": "正文内容",
+      "categories": ["技术笔记"],
+      "tags": ["Hugo"],
+      "request_id": "draft-20260920-001"
+    }
+  }
+}
+~~~
 
 ## Docker 部署
 
-1. 复制配置并修改为实际的绝对路径：
+宿主机需要 Docker Compose、Hugo 可执行文件和一个 Hugo 站点目录。路径必须使用宿主机绝对路径，并且运行数据不要放在 Git 仓库内：
 
-   ```bash
-   cp .env.example .env
-   $EDITOR .env
-   mkdir -p /srv/hugo-mcp
-   chmod 700 /srv/hugo-mcp
-   ```
+~~~bash
+cp .env.example .env
+$EDITOR .env
+mkdir -p /srv/hugo-mcp
+chmod 700 /srv/hugo-mcp
+docker compose up -d --build
+~~~
 
-2. 确认宿主机已安装 Hugo，并启动：
+.env 至少设置：
 
-   ```bash
-   docker compose up -d --build
-   ```
+~~~dotenv
+HUGO_SITE_ROOT_HOST=/srv/hugo/site
+HUGO_MCP_DATA_ROOT_HOST=/srv/hugo-mcp
+HUGO_BIN_HOST=/usr/local/bin/hugo
+HUGO_MCP_BIND_ADDRESS=127.0.0.1
+HUGO_MCP_PORT=8095
+~~~
 
-`HUGO_SITE_ROOT_HOST` 必须是 Hugo 站点根目录，目录中应包含 `hugo.toml` 和 `content/`。`HUGO_MCP_DATA_ROOT_HOST` 只用于 token、备份、审计、幂等记录和回收站，建议使用独立且不被 Git 跟踪的目录。Compose 默认只绑定 `127.0.0.1`；如果需要通过反向代理访问，请在代理层提供 TLS、访问控制和来源限制。
+HUGO_SITE_ROOT_HOST 中必须存在 hugo.toml 和 content/。HUGO_MCP_DATA_ROOT_HOST 用于保存 token、备份、审计日志、幂等记录和软删除回收站。首次启动会自动生成 token，可在宿主机读取：
 
-## MCP 客户端
+~~~bash
+sudo cat /srv/hugo-mcp/token
+~~~
 
-将服务地址配置为反向代理后的 URL，并使用 `Authorization: Bearer <token>`。例如 Codex 的配置可以写成：
+Compose 默认只监听回环地址。需要让其他机器访问时，应通过 HTTPS 反向代理，并在代理层做访问控制；不要直接把 8095 暴露到公网。
 
-```toml
+## MCP 客户端配置
+
+以支持远程 HTTP MCP 的客户端为例：
+
+~~~toml
 [mcp_servers.hugo]
-url = "https://example.com/index.php/action/agent-mcp"
+url = "https://example.com/mcp"
 bearer_token_env = "HUGO_MCP_TOKEN"
-```
+~~~
 
-本地调试时可以先调用 `initialize`、`tools/list`，再调用 `tools/call`。发布、撤回、更新和删除必须先读取文章拿到最新 revision，并提供新的 `request_id`。
+先调用 initialize，再调用 tools/list。如果使用公开的兼容入口，也可以把 URL 改成 /index.php/action/agent-mcp。
 
-## 安全边界
+## 数据与安全
 
-- 不把 `.env`、token、备份、审计日志或回收站提交到 Git。
-- 不直接把 MCP 容器端口暴露到公网；生产环境放在受控反向代理后面。
-- 站点卷和运行数据卷使用规范化的绝对路径挂载，服务只在允许的文章目录和数据目录内操作。
-- 删除是软删除，原 Markdown 会先移动到私有回收站；需要人工清理时再处理运行数据目录。
+- 文章只允许落在规范化后的 content/posts/ 目录，拒绝路径越界和非法 slug。
+- 写入使用临时文件加原子替换；更新、发布、撤回、删除前会生成备份。
+- 删除是软删除，Markdown 会先移动到私有回收站，不会立即销毁。
+- 所有写操作都写入审计 JSONL，并要求 request_id 幂等。
+- 默认请求体上限为 2 MiB，每个来源地址每分钟最多 30 次请求。
+- .env、token、备份、审计日志、幂等记录和回收站都不应提交到 Git。
 
 ## 开发检查
 
-```bash
+~~~bash
 python -m py_compile server.py
 docker compose config
-```
+~~~
 
-本项目只包含 MCP 服务源码与部署模板；具体博客内容在私有的 `Felix-personal_blog` 仓库中维护。
+当前版本通过 v0.1.0 Release 发布，后续变更会在 GitHub Releases 中记录。
