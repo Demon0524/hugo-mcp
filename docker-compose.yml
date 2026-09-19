@@ -1,0 +1,30 @@
+name: hugo-mcp
+
+services:
+  mcp:
+    build: .
+    restart: unless-stopped
+    # The site volume must be writable because publish/unpublish/delete update
+    # Markdown and rebuild Hugo. Run with a non-root UID if the host volume
+    # permissions allow it.
+    user: "${HUGO_MCP_CONTAINER_USER:-0:0}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    environment:
+      HUGO_SITE_ROOT: /site
+      HUGO_MCP_DATA_ROOT: /data
+      HUGO_MCP_TOKEN_FILE: /data/token
+      HUGO_BIN: /usr/local/bin/hugo
+      HUGO_BUILD_TIMEOUT: "${HUGO_BUILD_TIMEOUT:-120}"
+      HUGO_MCP_MAX_BODY: "${HUGO_MCP_MAX_BODY:-2097152}"
+    ports:
+      - "${HUGO_MCP_BIND_ADDRESS:-127.0.0.1}:${HUGO_MCP_PORT:-8095}:8080"
+    volumes:
+      - "${HUGO_SITE_ROOT_HOST:?Set HUGO_SITE_ROOT_HOST to the Hugo site directory}:/site"
+      - "${HUGO_MCP_DATA_ROOT_HOST:?Set HUGO_MCP_DATA_ROOT_HOST to a private runtime-data directory}:/data"
+      - "${HUGO_BIN_HOST:-/usr/local/bin/hugo}:/usr/local/bin/hugo:ro"

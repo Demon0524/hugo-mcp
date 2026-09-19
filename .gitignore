@@ -1,0 +1,25 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+token
+*.key
+*.pem
+
+# Runtime data (mounted outside the repository in production)
+data/
+backups/
+trash/
+audit/
+*.log
+
+# Python and editor files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.mypy_cache/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
