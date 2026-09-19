@@ -1,0 +1,200 @@
+{
+  "tools": [
+    {
+      "name": "hugo_list_posts",
+      "description": "List Hugo posts and their revisions.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "all",
+              "draft",
+              "publish"
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "name": "hugo_get_post",
+      "description": "Read one Hugo Markdown post.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "hugo_create_draft",
+      "description": "Create a draft Markdown post. Requires request_id.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "title",
+          "request_id"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "hugo_update_draft",
+      "description": "Update a post with optimistic revision checking.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "slug",
+          "expected_revision",
+          "request_id"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "hugo_publish_post",
+      "description": "Publish a post, rebuild Hugo, and return the new revision.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "slug",
+          "expected_revision",
+          "request_id"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "hugo_unpublish_post",
+      "description": "Move a published post back to draft and rebuild Hugo.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "slug",
+          "expected_revision",
+          "request_id"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "hugo_delete_post",
+      "description": "Soft-delete a post into the private Hugo MCP trash and rebuild Hugo.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "slug",
+          "expected_revision",
+          "request_id"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "hugo_build",
+      "description": "Build the Hugo site from the current Markdown source.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}

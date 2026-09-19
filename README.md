@@ -1,5 +1,7 @@
 # Hugo MCP
 
+[最新 Release](https://github.com/Demon0524/hugo-mcp/releases/latest) · [工具合同](docs/tools.md) · [使用教程](docs/tutorial.md) · [设计说明](docs/design.md) · [验证报告](docs/verification.md) · [更新记录](CHANGELOG.md)
+
 一个面向 Hugo 文件站点的轻量 MCP HTTP 服务。它直接读写 content/posts/*.md，不引入数据库，也不提供 CMS 后台。AI 客户端通过 MCP 调用文章工具，服务负责校验、写文件、生成备份、记录审计并按需执行 Hugo 构建。
 
 Git 操作不属于本服务。需要提交到 GitHub 时，由 MCP 客户端另外调用 GitHub MCP 或 GitHub Actions；Hugo MCP 不保存 GitHub 凭据。
@@ -138,4 +140,4 @@ python -m py_compile server.py
 docker compose config
 ~~~
 
-当前版本通过 v0.1.0 Release 发布，后续变更会在 GitHub Releases 中记录。
+功能基线从 v0.1.0 开始；当前文档更新发布为 v0.1.1，后续变更会在 GitHub Releases 中记录。
