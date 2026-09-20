@@ -666,7 +666,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             method = request.get("method")
             request_id = request.get("id")
             if method == "initialize":
-                result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "HugoMCP", "version": "0.1.0"}}
+                result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "HugoMCP", "version": "0.2.0"}}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":
