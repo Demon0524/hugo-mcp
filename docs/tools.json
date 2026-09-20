@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "hugo_list_posts",
-      "description": "List Hugo posts and their revisions.",
+      "description": "List Hugo posts and their revisions. Supports flat Markdown and Page Bundles.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -28,7 +28,7 @@
     },
     {
       "name": "hugo_get_post",
-      "description": "Read one Hugo Markdown post.",
+      "description": "Read one Hugo post, including Page Bundle media metadata when available.",
       "inputSchema": {
         "type": "object",
         "required": [
@@ -43,7 +43,7 @@
     },
     {
       "name": "hugo_create_draft",
-      "description": "Create a draft Markdown post. Requires request_id.",
+      "description": "Create a draft post. New drafts use a Hugo Page Bundle by default. Requires request_id.",
       "inputSchema": {
         "type": "object",
         "required": [
@@ -72,6 +72,10 @@
               "type": "string"
             }
           },
+          "bundle": {
+            "type": "boolean",
+            "default": true
+          },
           "request_id": {
             "type": "string"
           }
@@ -80,7 +84,7 @@
     },
     {
       "name": "hugo_update_draft",
-      "description": "Update a post with optimistic revision checking.",
+      "description": "Update a flat post or Page Bundle with optimistic revision checking.",
       "inputSchema": {
         "type": "object",
         "required": [
@@ -113,6 +117,12 @@
               "type": "string"
             }
           },
+          "summary": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string"
+          },
           "request_id": {
             "type": "string"
           }
@@ -121,7 +131,7 @@
     },
     {
       "name": "hugo_publish_post",
-      "description": "Publish a post, rebuild Hugo, and return the new revision.",
+      "description": "Publish a flat post or Page Bundle, rebuild Hugo, and return the new revision.",
       "inputSchema": {
         "type": "object",
         "required": [
@@ -167,7 +177,7 @@
     },
     {
       "name": "hugo_delete_post",
-      "description": "Soft-delete a post into the private Hugo MCP trash and rebuild Hugo.",
+      "description": "Soft-delete a post or Page Bundle into the private Hugo MCP trash and rebuild Hugo.",
       "inputSchema": {
         "type": "object",
         "required": [
@@ -189,8 +199,122 @@
       }
     },
     {
+      "name": "hugo_migrate_post_bundle",
+      "description": "Move one legacy flat post into content/posts/<slug>/index.md without changing its slug.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "slug",
+          "expected_revision",
+          "request_id"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "hugo_upload_media",
+      "description": "Upload a validated image into a Page Bundle and return a relative Markdown reference.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "post_slug",
+          "mime_type",
+          "data_base64",
+          "request_id"
+        ],
+        "properties": {
+          "post_slug": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string",
+            "enum": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif"
+            ]
+          },
+          "data_base64": {
+            "type": "string"
+          },
+          "alt": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "cover",
+              "inline",
+              "attachment"
+            ],
+            "default": "inline"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "hugo_list_media",
+      "description": "List image media stored beside a Page Bundle index.md.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "post_slug"
+        ],
+        "properties": {
+          "post_slug": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "hugo_delete_media",
+      "description": "Soft-delete one Page Bundle media file after checking its media revision, then rebuild Hugo.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "post_slug",
+          "filename",
+          "expected_revision",
+          "request_id"
+        ],
+        "properties": {
+          "post_slug": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
       "name": "hugo_build",
-      "description": "Build the Hugo site from the current Markdown source.",
+      "description": "Build the Hugo site from the current Markdown source and Page Bundles.",
       "inputSchema": {
         "type": "object",
         "properties": {}

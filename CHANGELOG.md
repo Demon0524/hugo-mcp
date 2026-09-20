@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0] - 2026-09-20
+
+Page Bundle 与媒体管理。
+
+- 新建草稿默认使用 `content/posts/<slug>/index.md` Page Bundle。
+- 新增 `hugo_upload_media`、`hugo_list_media` 和 `hugo_delete_media`。
+- 新增 `hugo_migrate_post_bundle`，可逐篇迁移旧 flat Markdown 文章。
+- 媒体上传支持 JPEG、PNG、WebP、GIF，校验文件签名、扩展名和大小。
+- 媒体使用独立 revision，删除进入 `trash/media/`。
+- 文章查询、读取、更新、发布和删除同时兼容 flat post 与 Page Bundle。
+
 ## [0.1.1] - 2026-09-20
 
 文档与开发体验更新，不改变 MCP 工具行为。

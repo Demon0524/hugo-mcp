@@ -12,7 +12,7 @@ MCP client / Codex
         ▼
 Hugo MCP HTTP server
   ├─ ToolRegistry：工具名称与输入 Schema
-  ├─ content/posts：文章 Markdown
+  ├─ content/posts：flat 文章与 Page Bundle
   ├─ public：Hugo 生成目录
   └─ data：token、备份、审计、幂等记录、trash
         │ subprocess
@@ -21,6 +21,18 @@ Hugo MCP HTTP server
 ```
 
 GitHub MCP、GitHub Actions 和反向代理属于外部组件，不是 Hugo MCP 的运行时依赖。
+
+## 内容模型
+
+服务兼容两种文章形态：
+
+```text
+legacy flat：content/posts/slug.md
+Page Bundle：content/posts/slug/index.md
+             content/posts/slug/image.webp
+```
+
+新建草稿默认使用 Page Bundle。旧文章可以继续读取、更新和发布；`hugo_migrate_post_bundle` 会在 revision 校验后将单个 flat 文件移动为 `index.md`，迁移前创建备份。媒体只能属于 Page Bundle，不能写入 flat 文章，也不能跨文章引用服务端文件路径。
 
 ## 文件与路径边界
 
@@ -58,16 +70,22 @@ hugo --source <site-root> --destination <public-root>
 
 - Token 位于运行数据目录的 `token` 文件，首次启动随机生成。
 - 只接受 Bearer Token，不提供后台登录、OAuth 或 GitHub 凭据管理。
-- 默认请求体上限 2 MiB。
+- 默认请求体上限 8 MiB，单个媒体文件默认最大 5 MiB。
 - 每个客户端地址每分钟最多 30 个请求。
 - 服务默认通过 Compose 绑定回环地址，公网访问应放在受控 HTTPS 反向代理之后。
+
+## 媒体模型
+
+媒体上传通过 JSON 中的 Base64 字段传输，服务端不读取调用者本机路径，也不抓取远程 URL。当前允许 JPEG、PNG、WebP、GIF；文件签名必须与声明的 MIME 类型一致，默认单文件上限 5 MiB。
+
+媒体文件与文章的 `index.md` 放在同一目录，上传结果返回相对 Markdown 引用。删除媒体使用媒体文件自身的 SHA-256 revision，并移动到 `trash/media/` 后重建站点。
 
 ## 非目标
 
 当前版本不实现：
 
 - CMS 后台 UI
-- 图片/附件上传
+- SVG、远程 URL 抓取和大文件媒体处理
 - 评论、分类和标签管理
 - Git 提交或 GitHub API
 - 多实例共享锁

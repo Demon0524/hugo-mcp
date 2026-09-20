@@ -7,10 +7,11 @@
 ```bash
 python -m py_compile server.py
 python scripts/generate_tools_docs.py
+python -m unittest discover -s tests -v
 docker compose config
 ```
 
-预期结果：Python 无语法错误，生成 8 个工具文档，Compose 配置可以解析。
+预期结果：Python 无语法错误，生成 12 个工具文档，媒体 Page Bundle 测试通过，Compose 配置可以解析。
 
 ## 运行检查
 
@@ -39,16 +40,20 @@ curl -i -X POST http://127.0.0.1:8095/mcp \
 6. `hugo_publish_post`：确认构建成功且文章输出存在。
 7. `hugo_unpublish_post`：确认 draft 状态和输出清理。
 8. `hugo_delete_post`：确认 Markdown 进入 trash 而不是直接销毁。
+9. `hugo_upload_media`：确认只接受允许的 MIME、扩展名和文件签名，并返回相对 Markdown 引用。
+10. `hugo_list_media`：确认返回媒体大小、MIME 和 revision。
+11. `hugo_delete_media`：确认媒体进入 `trash/media/` 并触发构建。
+12. `hugo_migrate_post_bundle`：确认 flat 文章先备份，再移动为 `index.md`。
 
 不要在生产文章上执行删除测试；使用隔离的测试站点和独立运行数据目录。
 
 ## 已验证环境
 
-- 公开源码：`v0.1.0`
+- 公开源码：`v0.2.0`
 - Python：3.12（docker03）
 - 服务形态：Docker Compose + Hugo 二进制挂载
 - 站点数据：文件系统 Markdown，不依赖数据库
 
 ## 尚未承诺的范围
 
-本项目没有声明多副本并发写入、跨主机事务、媒体上传和 GitHub 自动提交。需要这些能力时应先扩展设计和测试，再更新工具合同与版本说明。
+本项目没有声明多副本并发写入、跨主机事务和 GitHub 自动提交。媒体功能只覆盖小型图片，不覆盖 SVG、远程抓取和大文件处理。

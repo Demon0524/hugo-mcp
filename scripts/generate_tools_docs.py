@@ -28,7 +28,7 @@ def main() -> None:
         "# Hugo MCP 工具合同",
         "",
         "本文件由 `scripts/generate_tools_docs.py` 从 `server.py` 的 `TOOLS` 注册表生成。",
-        "实际工具列表、参数 Schema 与本文保持一致；服务只提供这 8 个工具。",
+        f"实际工具列表、参数 Schema 与本文保持一致；当前服务提供 {len(TOOLS)} 个工具。",
         "",
     ]
     for tool in TOOLS:

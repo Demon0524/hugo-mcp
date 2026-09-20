@@ -21,7 +21,8 @@ services:
       HUGO_MCP_TOKEN_FILE: /data/token
       HUGO_BIN: /usr/local/bin/hugo
       HUGO_BUILD_TIMEOUT: "${HUGO_BUILD_TIMEOUT:-120}"
-      HUGO_MCP_MAX_BODY: "${HUGO_MCP_MAX_BODY:-2097152}"
+      HUGO_MCP_MAX_BODY: "${HUGO_MCP_MAX_BODY:-8388608}"
+      HUGO_MCP_MEDIA_MAX_BYTES: "${HUGO_MCP_MEDIA_MAX_BYTES:-5242880}"
     ports:
       - "${HUGO_MCP_BIND_ADDRESS:-127.0.0.1}:${HUGO_MCP_PORT:-8095}:8080"
     volumes:
