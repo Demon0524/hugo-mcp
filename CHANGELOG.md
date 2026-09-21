@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Governance
+
+- Add contribution, security-reporting, and code-of-conduct guidance.
+- Add GitHub Actions checks, Pull Request template, and Issue templates.
+- Document the independent third-party relationship to Hugo and keep production deployment separate from public contributions.
+
 ## [0.2.0] - 2026-09-20
 
 Page Bundle 与媒体管理。

@@ -2,6 +2,8 @@
 
 [最新 Release](https://github.com/Demon0524/hugo-mcp/releases/latest) · [工具合同](docs/tools.md) · [使用教程](docs/tutorial.md) · [设计说明](docs/design.md) · [验证报告](docs/verification.md) · [更新记录](CHANGELOG.md)
 
+> Hugo 是其各自权利人的商标。本项目是独立的第三方 MCP 适配器，与 Hugo 官方没有隶属、授权或背书关系。
+
 一个面向 Hugo 文件站点的轻量 MCP HTTP 服务。它直接读写 content/posts/ 下的 Markdown 和 Page Bundle，不引入数据库，也不提供 CMS 后台。AI 客户端通过 MCP 调用文章和媒体工具，服务负责校验、写文件、生成备份、记录审计并按需执行 Hugo 构建。
 
 Git 操作不属于本服务。需要提交到 GitHub 时，由 MCP 客户端另外调用 GitHub MCP 或 GitHub Actions；Hugo MCP 不保存 GitHub 凭据。
@@ -148,3 +150,11 @@ docker compose config
 ~~~
 
 功能基线从 v0.1.0 开始；当前版本为 v0.2.0，后续变更会在 GitHub Releases 中记录。
+
+## 贡献与发布边界
+
+本项目采用 MIT License，欢迎通过 Issue、Fork 和 Pull Request 改进通用的 Hugo MCP 能力。贡献范围包括工具合同、文件安全、媒体管理、测试、文档和容器部署；请不要提交私人博客文章、真实站点内容、Token、备份、审计日志或生产环境配置。
+
+所有改动先经过 GitHub Actions 检查，再通过 Pull Request 合并到 `main`。生产 docker03 不会自动运行公开仓库的提交，只从审核后的 Release 手工部署。安全问题请遵循 [安全报告流程](SECURITY.md)，不要在公开 Issue 中披露可利用细节。
+
+完整流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
