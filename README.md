@@ -25,6 +25,7 @@ Git 操作不属于本服务。需要提交到 GitHub 时，由 MCP 客户端另
 | hugo_upload_media | 上传图片并返回相对 Markdown 引用 | post_slug、mime_type、data_base64、request_id |
 | hugo_list_media | 列出文章 Page Bundle 中的媒体 | post_slug |
 | hugo_delete_media | 软删除媒体并构建 Hugo | post_slug、filename、expected_revision、request_id |
+| hugo_batch_posts | 预览或执行一批文章发布、撤回、软删除 | items，默认 dry_run=true；执行时需 request_id |
 | hugo_build | 按当前源码执行一次 Hugo 构建 | 无 |
 
 本服务不包含后台 UI、评论管理、全文搜索、Git 提交或 GitHub 账号管理。媒体上传目前只支持 JPEG、PNG、WebP、GIF，不抓取远程 URL。
@@ -34,13 +35,19 @@ Git 操作不属于本服务。需要提交到 GitHub 时，由 MCP 客户端另
 文章修改使用乐观锁，避免 AI 覆盖别人刚刚修改的内容：
 
 1. 调用 hugo_list_posts 或 hugo_get_post，取得目标文章的 revision。
-2. 调用 hugo_create_draft 或 hugo_update_draft。每次写操作都使用唯一的 request_id；重试同一个 request_id 会返回原结果，不会重复写入。
+2. 调用 hugo_create_draft 或 hugo_update_draft。每次新操作使用唯一的 request_id；重试必须保留原工具、全部参数和 ID，已完成时返回原结果，未完成时恢复原操作。
 3. 检查返回内容，确认标题、分类、标签和正文。
 4. 如果文章需要截图，调用 hugo_upload_media，把返回的相对 Markdown 引用插入正文。
 5. 调用 hugo_publish_post，并传入刚才返回的最新 revision。
 6. 如需同步代码仓库，再由客户端调用 GitHub MCP 提交 Hugo 源码和 Page Bundle 媒体。
 
 如果 revision 已变化，服务会拒绝写入；重新读取文章后再提交，不要绕过检查。
+
+批量发布、撤回和删除使用 `hugo_batch_posts`：显式列出最多 50 篇不同文章的 `action`、`slug` 和 `expected_revision`，先用默认的 `dry_run: true` 检查计划，再传 `dry_run: false` 与新的 `request_id` 执行。所有项目在写入前校验，完成源码变更后统一构建一次；首次建立输出清单时可能额外构建一次。预览不是锁定，执行时仍会重新校验 revision。
+
+首次需要构建的源码变更会先私下构建当前源码，为已有公开文件建立输出清单，不修改 `public/`；基线构建失败时源码保持不变。显式调用 `hugo_build` 则会发布当前非草稿内容，不是只读初始化。后续正式构建按清单同步输出并清理不再生成的分页、聚合页、Feed 和媒体。未被清单管理且未在新构建中生成的文件不会删除；建立清单后被外部修改的旧生成文件会保留并返回警告。首次清单采用匹配路径的现有文件哈希，无法识别此前的手工修改，也无法识别当前源码不再生成的历史残留；此类内容仍需人工审查。
+
+构建或文件操作失败可能留下待恢复操作，不代表自动回滚。使用完全相同的请求重试，服务会根据持久化计划继续执行；期间可以读取内容，但其他源码写入和独立的 `hugo_build` 会被阻止。详见[恢复与并发约束](docs/design.md#幂等与恢复)。构建成功只表示服务所在文件系统的输出已更新，不代表远程站点已经上线。
 
 ## JSON-RPC 示例
 
@@ -112,7 +119,7 @@ HUGO_MCP_PORT=8095
 HUGO_MCP_MEDIA_MAX_BYTES=5242880
 ~~~
 
-HUGO_SITE_ROOT_HOST 中必须存在 hugo.toml 和 content/。新建文章默认使用 `content/posts/<slug>/index.md` Page Bundle；现有的 `content/posts/<slug>.md` 仍然兼容，可通过 `hugo_migrate_post_bundle` 逐篇迁移。HUGO_MCP_DATA_ROOT_HOST 用于保存 token、备份、审计日志、幂等记录和软删除回收站。首次启动会自动生成 token，可在宿主机读取：
+HUGO_SITE_ROOT_HOST 中必须存在 hugo.toml 和 content/。新建文章默认使用 `content/posts/<slug>/index.md` Page Bundle；现有的 `content/posts/<slug>.md` 仍然兼容，可通过 `hugo_migrate_post_bundle` 逐篇迁移。HUGO_MCP_DATA_ROOT_HOST 用于保存 token、备份、审计日志、幂等与恢复记录、输出清单和软删除回收站，必须持久化且不应与其他站点共用。首次启动会自动生成 token，可在宿主机读取：
 
 ~~~bash
 sudo cat /srv/hugo-mcp/token
@@ -138,14 +145,18 @@ bearer_token_env = "HUGO_MCP_TOKEN"
 - 媒体只允许落在所属 Page Bundle 目录，拒绝跨文章写入、非法文件名和错误文件签名。
 - 写入使用临时文件加原子替换；更新、发布、撤回、删除前会生成备份。
 - 删除是软删除，Markdown 会先移动到私有回收站，不会立即销毁。
-- 所有写操作都写入审计 JSONL，并要求 request_id 幂等。
+- 源码写操作记录审计 JSONL，并要求 request_id；新记录绑定工具与参数，不能把旧 ID 用于不同操作。旧版本的结果记录仍可回放，但无法追溯绑定原始参数。
+- 批量操作会预先校验全部项目，但不是跨文件事务；I/O 失败后的部分变更通过原请求恢复，不自动回滚。
+- 构建结果逐文件同步，不保证整个站点一次原子切换。单进程锁不覆盖外部编辑器或其他服务实例，必须协调外部写入。
 - 默认请求体上限为 8 MiB，单个媒体文件默认最大 5 MiB，每个来源地址每分钟最多 30 次请求。
-- .env、token、备份、审计日志、幂等记录和回收站都不应提交到 Git。
+- .env、token、备份、审计日志、幂等与恢复记录、输出清单和回收站都不应提交到 Git。
 
 ## 开发检查
 
 ~~~bash
-python -m py_compile server.py
+python -m compileall -q server.py output_build.py scripts tests
+python -m unittest discover -s tests -v
+python scripts/generate_tools_docs.py
 docker compose config
 ~~~
 
@@ -155,6 +166,6 @@ docker compose config
 
 本项目采用 MIT License，欢迎通过 Issue、Fork 和 Pull Request 改进通用的 Hugo MCP 能力。贡献范围包括工具合同、文件安全、媒体管理、测试、文档和容器部署；请不要提交私人博客文章、真实站点内容、Token、备份、审计日志或生产环境配置。
 
-所有改动先经过 GitHub Actions 检查，再通过 Pull Request 合并到 `main`。生产 docker03 不会自动运行公开仓库的提交，只从审核后的 Release 手工部署。安全问题请遵循 [安全报告流程](SECURITY.md)，不要在公开 Issue 中披露可利用细节。
+所有改动先经过 GitHub Actions 检查，再通过 Pull Request 合并到 `main`。仓库检查不连接用户站点；部署方式由使用者自行决定。安全问题请遵循 [安全报告流程](SECURITY.md)，不要在公开 Issue 中披露可利用细节。
 
 完整流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。

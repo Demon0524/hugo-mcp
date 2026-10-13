@@ -20,7 +20,6 @@ import os
 import re
 import secrets
 import shutil
-import subprocess
 import tempfile
 import threading
 import time
@@ -28,6 +27,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+import output_build
 
 SITE_ROOT = Path(os.environ.get("HUGO_SITE_ROOT", "/site")).resolve()
 
@@ -161,9 +161,22 @@ def sha256_file(path: Path) -> str:
 
 
 def ensure_roots() -> None:
+    validate_roots()
     POSTS_ROOT.mkdir(parents=True, exist_ok=True)
     for path in (DATA_ROOT, TRASH_ROOT, BACKUP_ROOT, IDEMPOTENCY_ROOT):
         path.mkdir(parents=True, exist_ok=True)
+
+
+def validate_roots() -> None:
+    roots = (POSTS_ROOT, PUBLIC_ROOT, DATA_ROOT)
+    if SITE_ROOT in roots:
+        raise ValueError("content, public, and private data must not equal the site root")
+    for index, root in enumerate(roots):
+        for other in roots[index + 1:]:
+            if root == other or root in other.parents or other in root.parents:
+                raise ValueError("content, public, and private data directories must not overlap")
+    if SITE_ROOT in DATA_ROOT.parents or TOKEN_FILE == SITE_ROOT or SITE_ROOT in TOKEN_FILE.parents:
+        raise ValueError("private data and token must stay outside the site source tree")
 
 
 def safe_slug(value: str) -> str:
@@ -369,7 +382,7 @@ def media_path_for_post(path: Path, filename: str) -> Path:
 
 def backup_file(path: Path, label: str) -> Path:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    target = BACKUP_ROOT / f"{stamp}-{label}-{path.name}"
+    target = BACKUP_ROOT / f"{stamp}-{secrets.token_hex(8)}-{label}-{path.name}"
     shutil.copy2(path, target)
     return target
 
@@ -397,32 +410,16 @@ def previous_request(request_id: str) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def build_site() -> dict[str, Any]:
-    command = [HUGO_BIN, "--source", str(SITE_ROOT), "--destination", str(PUBLIC_ROOT)]
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=BUILD_TIMEOUT, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"hugo build failed: {exc}") from exc
-    if completed.returncode != 0:
-        raise RuntimeError((completed.stderr or completed.stdout)[-4000:])
-    return {"returncode": 0, "output": (completed.stdout or "")[-4000:]}
+def build_site(*, baseline_only: bool = False) -> dict[str, Any]:
+    validate_roots()
+    return output_build.build_site(SITE_ROOT, PUBLIC_ROOT, DATA_ROOT, HUGO_BIN, BUILD_TIMEOUT,
+                                  baseline_only=baseline_only)
 
 
-def remove_public_outputs(slug: str) -> None:
-    """Remove output for a post that is no longer published.
-
-    Hugo does not remove stale files unless the whole destination is cleaned;
-    cleaning the whole destination would also remove migrated media. Remove
-    only the known permalink locations instead.
-    """
-    for candidate in (PUBLIC_ROOT / "posts" / slug, PUBLIC_ROOT / slug):
-        resolved = candidate.resolve()
-        if resolved == PUBLIC_ROOT or PUBLIC_ROOT not in resolved.parents:
-            continue
-        if resolved.is_dir():
-            shutil.rmtree(resolved)
-        elif resolved.exists():
-            resolved.unlink()
+def ensure_output_baseline() -> None:
+    # Record the current generated paths before any source disappears.
+    if not output_build.has_manifest(DATA_ROOT):
+        build_site(baseline_only=True)
 
 
 def list_posts(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -448,118 +445,250 @@ def require_revision(path: Path, arguments: dict[str, Any]) -> str:
     return expected
 
 
-def mutate(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    request_id = arguments.get("request_id")
-    if not isinstance(request_id, str):
-        raise ValueError("request_id is required for mutations")
-    old = previous_request(request_id)
-    if old is not None:
-        return old
+class RetryableMutationError(RuntimeError):
+    def __init__(self, request_id: str, phase: str, message: str):
+        super().__init__(message)
+        self.request_id = request_id
+        self.phase = phase
 
-    with MUTATION_LOCK:
-        if name == "hugo_create_draft":
-            title = str(arguments.get("title") or "").strip()
-            if not title or len(title) > 200:
-                raise ValueError("title is required and must be at most 200 characters")
-            slug = safe_slug(str(arguments.get("slug") or title))
-            if not SLUG_RE.fullmatch(slug):
-                raise ValueError("invalid slug")
-            use_bundle = bool(arguments.get("bundle", True))
-            path = bundle_post_path(slug) if use_bundle else post_path(slug)
-            if path.exists() or post_path(slug).exists() or bundle_post_path(slug).exists():
-                raise FileExistsError(slug)
-            timestamp = str(arguments.get("date") or now_iso())
-            front = {
-                "title": title,
-                "date": timestamp,
-                "lastmod": timestamp,
-                "slug": slug,
-                "draft": True,
-                "categories": arguments.get("categories") or [],
-                "tags": arguments.get("tags") or [],
-            }
-            atomic_write(path, render_markdown(front, str(arguments.get("content") or "")))
-            result = {"post": post_summary(path), "action": "created"}
-            audit(name, request_id, {"slug": slug, "revision": result["post"]["revision"], "bundle": use_bundle})
+
+def path_revision(path: Path) -> str | None:
+    """Fingerprint a whole bundle for safe move replay, including its media."""
+    if path.is_symlink():
+        raise ValueError("mutation paths must not be symlinks")
+    if not path.exists():
+        return None
+    if path.is_file():
+        return sha256_file(path)
+    entries = []
+    for child in sorted(path.rglob("*")):
+        if child.is_symlink():
+            raise ValueError("bundle must not contain symlinks")
+        entries.append([child.relative_to(path).as_posix(), sha256_file(child) if child.is_file() else None])
+    return hashlib.sha256(json_bytes(entries)).hexdigest()
+
+
+def checked_mutation_path(value: str, root: Path) -> Path:
+    path = Path(value)
+    if path == root or root not in path.parents:
+        raise ValueError("mutation path is outside its allowed directory")
+    if any(part.is_symlink() for part in (path, *path.parents)) or path.resolve() != path:
+        raise ValueError("mutation paths must not contain symlinks")
+    return path
+
+
+def write_step(path: Path, content: bytes) -> dict[str, Any]:
+    checked_mutation_path(str(path), POSTS_ROOT)
+    return {"kind": "write", "path": str(path), "before": path_revision(path),
+            "after": hashlib.sha256(content).hexdigest(), "content": base64.b64encode(content).decode("ascii")}
+
+
+def move_step(source: Path, target: Path, backup: Path | None = None) -> dict[str, Any]:
+    checked_mutation_path(str(source), POSTS_ROOT)
+    checked_mutation_path(str(target), TRASH_ROOT if TRASH_ROOT in target.parents else POSTS_ROOT)
+    if target.exists():
+        raise FileExistsError(str(target))
+    return {"kind": "move", "path": str(source), "target": str(target),
+            "before": path_revision(source), "backup": str(backup) if backup else None}
+
+
+def plan_mutation(name: str, arguments: dict[str, Any], request_id: str) -> dict[str, Any]:
+    """Validate and plan without touching source, output, backups or trash."""
+    needs_build = name not in {"hugo_create_draft", "hugo_update_draft", "hugo_upload_media"}
+    if name == "hugo_create_draft":
+        title = str(arguments.get("title") or "").strip()
+        if not title or len(title) > 200:
+            raise ValueError("title is required and must be at most 200 characters")
+        slug = safe_slug(str(arguments.get("slug") or title))
+        path = bundle_post_path(slug) if bool(arguments.get("bundle", True)) else post_path(slug)
+        if post_path(slug).exists() or bundle_post_path(slug).exists():
+            raise FileExistsError(slug)
+        timestamp = str(arguments.get("date") or now_iso())
+        front = {"title": title, "date": timestamp, "lastmod": timestamp, "slug": slug, "draft": True,
+                 "categories": arguments.get("categories") or [], "tags": arguments.get("tags") or []}
+        body = str(arguments.get("content") or "")
+        step = write_step(path, render_markdown(front, body).encode("utf-8"))
+        result = {"action": "created"}
+        spec = {"post_path": str(path)}
+    else:
+        slug = str(arguments.get("post_slug" if name in {"hugo_upload_media", "hugo_delete_media"} else "slug") or "")
+        path = find_post(slug)
+        checked_mutation_path(str(path), POSTS_ROOT)
+        spec = {}
+        if name == "hugo_upload_media":
+            content, _, filename, role = decode_media(arguments)
+            target = media_root_for_post(path) / filename
+            if target.exists():
+                raise FileExistsError(filename)
+            step = write_step(target, content)
+            result = {"post_slug": slug, "action": "uploaded"}
+            spec = {"media_path": str(target), "alt": str(arguments.get("alt") or "").strip()[:300] or None, "role": role}
+        elif name == "hugo_delete_media":
+            source = media_path_for_post(path, str(arguments.get("filename") or ""))
+            require_revision(source, arguments)
+            target = TRASH_ROOT / request_id / "media" / slug / source.name
+            step = move_step(source, target)
+            result = {"post_slug": slug, "filename": source.name, "trash_path": str(target), "action": "soft_deleted"}
         else:
-            slug = str((arguments.get("post_slug") if name in {"hugo_upload_media", "hugo_delete_media"} else arguments.get("slug")) or "")
-            path = find_post(slug)
-            if name == "hugo_upload_media":
-                root = media_root_for_post(path)
-                content, mime_type, filename, role = decode_media(arguments)
-                target = root / filename
-                if target.exists():
-                    raise FileExistsError(filename)
-                atomic_write_bytes(target, content)
-                alt = str(arguments.get("alt") or "").strip()[:300]
-                result = {"post_slug": slug, "media": media_info(target, alt=alt or None, role=role), "action": "uploaded"}
-                audit(name, request_id, {"slug": slug, "filename": filename, "bytes": len(content)})
-            elif name == "hugo_delete_media":
-                target = media_path_for_post(path, str(arguments.get("filename") or ""))
-                expected = arguments.get("expected_revision")
-                if not isinstance(expected, str) or not hmac.compare_digest(expected, sha256_file(target)):
-                    raise ValueError("media revision mismatch; list the media again before deleting it")
-                media_trash = TRASH_ROOT / "media"
-                media_trash.mkdir(parents=True, exist_ok=True)
-                stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                trash_target = media_trash / f"{stamp}-{slug}-{target.name}"
-                shutil.move(str(target), str(trash_target))
-                build = build_site()
-                result = {"post_slug": slug, "filename": target.name, "trash_path": str(trash_target), "build": build, "action": "soft_deleted"}
-                audit(name, request_id, {"slug": slug, "filename": target.name, "result": result["action"]})
-            elif name == "hugo_migrate_post_bundle":
-                flat = post_path(slug)
-                if path != flat:
+            require_revision(path, arguments)
+            if name == "hugo_migrate_post_bundle":
+                if path != post_path(slug):
                     raise ValueError("post is already a page bundle")
-                require_revision(path, arguments)
-                root = bundle_root(slug)
-                if root.exists():
-                    raise FileExistsError(str(root))
-                backup_file(path, "before-bundle-migration")
-                root.mkdir(parents=True, exist_ok=False)
-                shutil.move(str(path), str(root / "index.md"))
-                build = build_site()
-                result = {"post": post_summary(root / "index.md"), "build": build, "action": "migrated_to_bundle"}
-                audit(name, request_id, {"slug": slug, "result": result["action"]})
-            else:
-                require_revision(path, arguments)
+                if bundle_root(slug).exists():
+                    raise FileExistsError(str(bundle_root(slug)))
+                target = bundle_post_path(slug)
+                step = move_step(path, target, backup=path)
+                result = {"action": "migrated_to_bundle"}
+                spec = {"post_path": str(target)}
+            elif name == "hugo_delete_post":
+                source = path.parent if is_bundle(path) else path
+                target = TRASH_ROOT / request_id / source.name
+                step = move_step(source, target, backup=path)
+                result = {"slug": slug, "trash_path": str(target), "action": "soft_deleted"}
+            elif name in {"hugo_update_draft", "hugo_publish_post", "hugo_unpublish_post"}:
                 front, body = parse_markdown(path)
-                backup_file(path, "before-mutation")
                 if name == "hugo_update_draft":
-                    if "title" in arguments:
-                        front["title"] = str(arguments["title"])
-                    if "content" in arguments:
-                        body = str(arguments["content"])
-                    for key in ("categories", "tags", "summary", "date"):
+                    for key in ("title", "categories", "tags", "summary", "date"):
                         if key in arguments:
                             front[key] = arguments[key]
-                    front["lastmod"] = now_iso()
-                    atomic_write(path, render_markdown(front, body))
-                    result = {"post": post_summary(path), "action": "updated"}
-                elif name in {"hugo_publish_post", "hugo_unpublish_post"}:
-                    front["draft"] = name == "hugo_unpublish_post"
-                    front["lastmod"] = now_iso()
-                    atomic_write(path, render_markdown(front, body))
-                    if front["draft"]:
-                        remove_public_outputs(slug)
-                    build = build_site()
-                    result = {"post": post_summary(path), "build": build, "action": "published" if not front["draft"] else "unpublished"}
-                elif name == "hugo_delete_post":
-                    TRASH_ROOT.mkdir(parents=True, exist_ok=True)
-                    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                    source = path.parent if is_bundle(path) else path
-                    target = TRASH_ROOT / f"{stamp}-{slug}" if is_bundle(path) else TRASH_ROOT / f"{stamp}-{path.name}"
-                    if target.exists():
-                        raise FileExistsError(str(target))
-                    shutil.move(str(source), str(target))
-                    remove_public_outputs(slug)
-                    build = build_site()
-                    result = {"slug": slug, "trash_path": str(target), "build": build, "action": "soft_deleted"}
+                    if "content" in arguments:
+                        body = str(arguments["content"])
+                    action = "updated"
                 else:
-                    raise ValueError(f"unknown mutation {name}")
-                audit(name, request_id, {"slug": slug, "result": result.get("action")})
-        remember_request(request_id, result)
-        return result
+                    front["draft"] = name == "hugo_unpublish_post"
+                    action = "unpublished" if front["draft"] else "published"
+                front["lastmod"] = now_iso()
+                step = write_step(path, render_markdown(front, body).encode("utf-8"))
+                result = {"action": action}
+                spec = {"post_path": str(path)}
+            else:
+                raise ValueError(f"unknown mutation {name}")
+    return {"slug": slug, "step": step, "result": result, "spec": spec, "build_required": needs_build}
+
+
+def apply_step(step: dict[str, Any], verify_only: bool = False) -> None:
+    path = checked_mutation_path(step["path"], POSTS_ROOT)
+    current = path_revision(path)
+    if step["kind"] == "write":
+        if current == step["after"]:
+            return
+        if verify_only or current != step["before"]:
+            raise ValueError("source changed during pending operation; inspect before resuming")
+        if path.exists():
+            backup_file(path, "before-mutation")
+        atomic_write_bytes(path, base64.b64decode(step["content"], validate=True))
+    else:
+        target = Path(step["target"])
+        checked_mutation_path(str(target), TRASH_ROOT if TRASH_ROOT in target.parents else POSTS_ROOT)
+        target_revision = path_revision(target)
+        if current is None and target_revision == step["before"]:
+            return
+        if verify_only or current != step["before"] or target_revision is not None:
+            raise ValueError("move paths changed during pending operation; inspect source and trash before resuming")
+        if step.get("backup"):
+            backup_file(checked_mutation_path(step["backup"], POSTS_ROOT), "before-mutation")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(target))
+
+
+def materialize_result(plan: dict[str, Any]) -> dict[str, Any]:
+    result = dict(plan["result"])
+    spec = plan["spec"]
+    if "post_path" in spec:
+        result["post"] = post_summary(Path(spec["post_path"]))
+    if "media_path" in spec:
+        result["media"] = media_info(Path(spec["media_path"]), alt=spec["alt"], role=spec["role"])
+    return result
+
+
+def ensure_no_pending_request() -> None:
+    for path in sorted(IDEMPOTENCY_ROOT.glob("*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("journal_version") == 2 and record.get("state") == "pending":
+            raise RetryableMutationError(path.stem, record["phase"],
+                                         f"pending operation {path.stem}; resume it with the same arguments and request_id first")
+
+
+def resume_mutation(request_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    try:
+        for plan in record["plans"]:
+            apply_step(plan["step"], verify_only=record["phase"] != "source")
+        if record["phase"] == "source":
+            results = [materialize_result(plan) for plan in record["plans"]]
+            record["result"] = {"action": "batch_completed", "items": results} if record["batch"] else results[0]
+            record["phase"] = "build" if record["build_required"] else "finish"
+            remember_request(request_id, record)
+        if record["phase"] == "build":
+            record["result"]["build"] = build_site()
+            record["phase"] = "finish"
+            remember_request(request_id, record)
+        audit(record["name"], request_id, {"slugs": [plan["slug"] for plan in record["plans"]],
+                                          "result": record["result"]["action"]})
+        record["state"] = "complete"
+        # Completed journals no longer need the private source payloads.
+        record.pop("plans")
+        remember_request(request_id, record)
+        return record["result"]
+    except Exception as exc:
+        raise RetryableMutationError(request_id, record["phase"],
+                                     f"operation pending; retry identical arguments and request_id after resolving the error: {exc}") from exc
+
+
+def batch_plans(arguments: dict[str, Any], request_id: str) -> list[dict[str, Any]]:
+    items = arguments.get("items")
+    if not isinstance(items, list) or not 1 <= len(items) <= 50:
+        raise ValueError("items must contain between 1 and 50 explicit post operations")
+    names = {"publish": "hugo_publish_post", "unpublish": "hugo_unpublish_post", "delete": "hugo_delete_post"}
+    plans = []
+    paths = set()
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {"action", "slug", "expected_revision"}:
+            raise ValueError("each batch item must contain only action, slug, and expected_revision")
+        if not all(isinstance(value, str) for value in item.values()):
+            raise ValueError("batch action, slug, and expected_revision must be strings")
+        if item["action"] not in names:
+            raise ValueError("batch action must be publish, unpublish, or delete")
+        plan = plan_mutation(names[item["action"]], item, request_id)
+        identity = find_post(plan["slug"])
+        if identity in paths:
+            raise ValueError("each post may occur only once in a batch")
+        paths.add(identity)
+        plans.append(plan)
+    return plans
+
+
+def mutate(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    with MUTATION_LOCK:
+        batch = name == "hugo_batch_posts"
+        if batch and not isinstance(arguments.get("dry_run", True), bool):
+            raise ValueError("dry_run must be a boolean")
+        if batch and arguments.get("dry_run", True):
+            plans = batch_plans(arguments, "preview")
+            return {"action": "planned", "build_required": True,
+                    "items": [{"slug": plan["slug"], "action": item["action"],
+                               "expected_revision": item["expected_revision"]} for plan, item in zip(plans, arguments["items"])]}
+        request_id = arguments.get("request_id")
+        request_key(request_id)
+        fingerprint = hashlib.sha256(json.dumps({"name": name, "arguments": arguments}, sort_keys=True,
+                                               ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        old = previous_request(request_id)
+        if old is not None:
+            if old.get("journal_version") != 2:
+                return old  # Preserve pre-journal idempotency records.
+            if old["fingerprint"] != fingerprint:
+                raise ValueError("request_id was already used with different arguments or tool")
+            if old["state"] == "complete":
+                return old["result"]
+            return resume_mutation(request_id, old)
+        ensure_no_pending_request()
+        plans = batch_plans(arguments, request_id) if batch else [plan_mutation(name, arguments, request_id)]
+        needs_build = any(plan["build_required"] for plan in plans)
+        if needs_build:
+            ensure_output_baseline()
+        record = {"journal_version": 2, "fingerprint": fingerprint, "name": name, "state": "pending",
+                  "phase": "source", "batch": batch, "build_required": needs_build, "plans": plans}
+        remember_request(request_id, record)
+        return resume_mutation(request_id, record)
 
 
 TOOLS = [
@@ -574,6 +703,7 @@ TOOLS = [
     {"name": "hugo_upload_media", "description": "Upload a validated image into a Page Bundle and return a relative Markdown reference.", "inputSchema": {"type": "object", "required": ["post_slug", "mime_type", "data_base64", "request_id"], "properties": {"post_slug": {"type": "string"}, "filename": {"type": "string"}, "mime_type": {"type": "string", "enum": ["image/jpeg", "image/png", "image/webp", "image/gif"]}, "data_base64": {"type": "string"}, "alt": {"type": "string", "maxLength": 300}, "role": {"type": "string", "enum": ["cover", "inline", "attachment"], "default": "inline"}, "request_id": {"type": "string"}}}},
     {"name": "hugo_list_media", "description": "List image media stored beside a Page Bundle index.md.", "inputSchema": {"type": "object", "required": ["post_slug"], "properties": {"post_slug": {"type": "string"}}}},
     {"name": "hugo_delete_media", "description": "Soft-delete one Page Bundle media file after checking its media revision, then rebuild Hugo.", "inputSchema": {"type": "object", "required": ["post_slug", "filename", "expected_revision", "request_id"], "properties": {"post_slug": {"type": "string"}, "filename": {"type": "string"}, "expected_revision": {"type": "string"}, "request_id": {"type": "string"}}}},
+    {"name": "hugo_batch_posts", "description": "Preview (default) or execute up to 50 explicit publish, unpublish, or soft-delete operations. Validate every revision before any write, then build once after output tracking is initialized. Execution requires request_id; retry identical inputs to resume pending work.", "inputSchema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"type": "object", "required": ["action", "slug", "expected_revision"], "additionalProperties": False, "properties": {"action": {"type": "string", "enum": ["publish", "unpublish", "delete"]}, "slug": {"type": "string"}, "expected_revision": {"type": "string"}}}}, "dry_run": {"type": "boolean", "default": True}, "request_id": {"type": "string"}}, "allOf": [{"if": {"required": ["dry_run"], "properties": {"dry_run": {"const": False}}}, "then": {"required": ["request_id"]}}]}},
     {"name": "hugo_build", "description": "Build the Hugo site from the current Markdown source and Page Bundles.", "inputSchema": {"type": "object", "properties": {}}},
 ]
 
@@ -592,10 +722,11 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         path = find_post(str(arguments.get("post_slug") or ""))
         media = list_media_for_post(path)
         return {"post": post_summary(path), "media": media, "total": len(media)}
-    if name in {"hugo_create_draft", "hugo_update_draft", "hugo_publish_post", "hugo_unpublish_post", "hugo_delete_post", "hugo_migrate_post_bundle", "hugo_upload_media", "hugo_delete_media"}:
+    if name in {"hugo_create_draft", "hugo_update_draft", "hugo_publish_post", "hugo_unpublish_post", "hugo_delete_post", "hugo_migrate_post_bundle", "hugo_upload_media", "hugo_delete_media", "hugo_batch_posts"}:
         return mutate(name, arguments)
     if name == "hugo_build":
         with MUTATION_LOCK:
+            ensure_no_pending_request()
             return build_site()
     raise ValueError(f"unknown tool {name}")
 
@@ -613,6 +744,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(data)))
+        if status == 429:
+            self.send_header("Retry-After", "60")
         self.end_headers()
         self.wfile.write(data)
 
@@ -651,7 +784,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(404, {"error": error("NOT_FOUND", "Unknown MCP endpoint.")})
             return
         if self._rate_limited():
-            self._send(429, {"error": error("RATE_LIMITED", "Too many requests; retry later.")})
+            self._send(429, {"error": {**error("RATE_LIMITED", "Too many requests; retry later."), "retryable": True}})
             return
         if not self._authorized():
             self._send(401, {"error": error("UNAUTHORIZED", "A Bearer token is required.")})
@@ -678,6 +811,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 raise ValueError(f"unsupported method: {method}")
             self._send(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
+        except RetryableMutationError as exc:
+            details = {"request_id": exc.request_id, "phase": exc.phase}
+            self._send(409, {"jsonrpc": "2.0", "id": request.get("id") if isinstance(request, dict) else None,
+                             "error": {**error("OPERATION_PENDING", str(exc), details), "retryable": True}})
         except FileNotFoundError as exc:
             self._send(404, {"jsonrpc": "2.0", "id": request.get("id") if "request" in locals() else None, "error": error("NOT_FOUND", str(exc))})
         except (ValueError, FileExistsError, RuntimeError, json.JSONDecodeError) as exc:

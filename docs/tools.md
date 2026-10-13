@@ -1,7 +1,7 @@
 # Hugo MCP 工具合同
 
 本文件由 `scripts/generate_tools_docs.py` 从 `server.py` 的 `TOOLS` 注册表生成。
-实际工具列表、参数 Schema 与本文保持一致；当前服务提供 12 个工具。
+实际工具列表、参数 Schema 与本文保持一致；当前服务提供 13 个工具。
 
 ## `hugo_list_posts`
 
@@ -367,6 +367,79 @@ Soft-delete one Page Bundle media file after checking its media revision, then r
       "type": "string"
     }
   }
+}
+```
+
+## `hugo_batch_posts`
+
+Preview (default) or execute up to 50 explicit publish, unpublish, or soft-delete operations. Validate every revision before any write, then build once after output tracking is initialized. Execution requires request_id; retry identical inputs to resume pending work.
+
+### 输入 Schema
+
+```json
+{
+  "type": "object",
+  "required": [
+    "items"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "required": [
+          "action",
+          "slug",
+          "expected_revision"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "publish",
+              "unpublish",
+              "delete"
+            ]
+          },
+          "slug": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": true
+    },
+    "request_id": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "dry_run"
+        ],
+        "properties": {
+          "dry_run": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "request_id"
+        ]
+      }
+    }
+  ]
 }
 ```
 

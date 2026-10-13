@@ -20,12 +20,14 @@
 ## 本地检查
 
 ```bash
-python -m py_compile server.py
+python -m compileall -q server.py output_build.py scripts tests
 python scripts/generate_tools_docs.py
+git diff --exit-code -- docs/tools.md docs/tools.json
+python -m unittest discover -s tests -v
 docker compose config
 ```
 
-GitHub Actions 还会执行单元测试、生成文档检查和 Docker 镜像构建。Pull Request 必须通过这些检查后才能合并。
+更新工具合同时先审核并提交生成文档，再运行文档差异检查。GitHub Actions 也会执行这些 Python 检查和 Docker 镜像构建。Pull Request 必须通过检查后才能合并。
 
 ## Pull Request 要求
 
@@ -33,6 +35,6 @@ GitHub Actions 还会执行单元测试、生成文档检查和 Docker 镜像构
 - 描述中写明动机、兼容性影响、测试命令和失败恢复方式。
 - 修改 `TOOLS` 时同步运行文档生成器，并提交更新后的 `docs/tools.md` 和 `docs/tools.json`。
 - 涉及写入、删除、媒体或路径校验时，必须补充或更新测试。
-- 保持生产环境隔离：不要在 PR 中引用私人博客仓库、真实域名、Token 或 docker03 信息。
+- 保持用户环境隔离：不要在 PR 中引用私人博客仓库、真实域名、Token、主机标识或用户操作记录。
 
 提交消息应说明行为变化；涉及工具合同的改动请同时更新 `CHANGELOG.md`。

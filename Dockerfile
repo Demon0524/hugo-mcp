@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
-COPY server.py /app/server.py
+COPY server.py output_build.py /app/
 
 RUN useradd --system --uid 10001 --create-home hugomcp
 
