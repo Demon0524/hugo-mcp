@@ -306,6 +306,14 @@ class MutationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.server.call_tool("hugo_unpublish_post", arguments)
 
+    def test_http_initialize_reports_shared_server_version(self):
+        status, headers, result = self.http_call({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(result["result"]["serverInfo"]["version"], self.server.VERSION)
+        self.assertTrue(headers["Server"].startswith("HugoMCP/" + self.server.VERSION))
+
     def test_http_build_failure_tells_client_it_is_retryable(self):
         path = self.seed_post()
         with mock.patch.object(self.server, "ensure_output_baseline"), mock.patch.object(
