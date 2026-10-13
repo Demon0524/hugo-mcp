@@ -160,7 +160,7 @@ python scripts/generate_tools_docs.py
 docker compose config
 ~~~
 
-功能基线从 v0.1.0 开始；当前版本为 v0.2.0，后续变更会在 GitHub Releases 中记录。
+功能基线从 v0.1.0 开始；当前版本为 v0.2.1，后续变更会在 GitHub Releases 中记录。
 
 ## 贡献与发布边界
 

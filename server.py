@@ -29,6 +29,7 @@ from typing import Any
 
 import output_build
 
+VERSION = "0.2.1"
 SITE_ROOT = Path(os.environ.get("HUGO_SITE_ROOT", "/site")).resolve()
 
 
@@ -732,7 +733,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = "HugoMCP/0.1"
+    server_version = f"HugoMCP/{VERSION}"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"{self.client_address[0]} {fmt % args}", flush=True)
@@ -799,7 +800,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             method = request.get("method")
             request_id = request.get("id")
             if method == "initialize":
-                result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "HugoMCP", "version": "0.2.0"}}
+                result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "HugoMCP", "version": VERSION}}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":
